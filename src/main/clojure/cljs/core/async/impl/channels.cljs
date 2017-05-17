@@ -51,15 +51,20 @@
         (if (and buf (not (impl/full? buf)))
           (do
             (impl/commit handler)
-            (let [done? (reduced? (add! buf val))]
-              (loop []
-                (when (and (pos? (.-length takes)) (pos? (count buf)))
-                  (let [^not-native taker (.pop takes)]
-                    (if ^boolean (impl/active? taker)
-                      (let [take-cb (impl/commit taker)
-                            val (impl/remove! buf)]
-                        (dispatch/run (fn [] (take-cb val))))
-                      (recur)))))
+            (let [done? (reduced? (add! buf val))
+                  take-cbs (loop [takers []]
+                              (if (and (pos? (.-length takes)) (pos? (count buf)))
+                                (let [^not-native taker (.pop takes)]
+                                  (if ^boolean (impl/active? taker)
+                                    (let [take-cb (impl/commit taker)
+                                          val (impl/remove! buf)]
+                                      (recur (conj takers (fn [] (take-cb val)))))
+                                    (recur takers)))
+                                takers))]
+
+              (when (seq take-cbs)
+                (doseq [f take-cbs]
+                    (dispatch/run f)))
               (when done? (abort this))
               (box true)))
           (let [taker (loop []
@@ -143,7 +148,7 @@
         nil
         (do (set! closed true)
             (when (and buf (zero? (.-length puts)))
-                    (add! buf))
+              (add! buf))
             (loop []
               (let [^not-native taker (.pop takes)]
                 (when-not (nil? taker)
@@ -169,17 +174,17 @@
   ([buf] (chan buf nil))
   ([buf xform] (chan buf xform nil))
   ([buf xform exh]
-     (ManyToManyChannel. (buffers/ring-buffer 32) 0 (buffers/ring-buffer 32)
-                         0 buf false
-                         (let [add! (if xform (xform impl/add!) impl/add!)]
-                           (fn
-                             ([buf]
-                              (try
-                                (add! buf)
-                                (catch :default t
-                                  (handle buf exh t))))
-                             ([buf val]
-                              (try
-                                (add! buf val)
-                                (catch :default t
-                                  (handle buf exh t)))))))))
+   (ManyToManyChannel. (buffers/ring-buffer 32) 0 (buffers/ring-buffer 32)
+                       0 buf false
+                       (let [add! (if xform (xform impl/add!) impl/add!)]
+                         (fn
+                           ([buf]
+                            (try
+                              (add! buf)
+                              (catch :default t
+                                (handle buf exh t))))
+                           ([buf val]
+                            (try
+                              (add! buf val)
+                              (catch :default t
+                                (handle buf exh t)))))))))
